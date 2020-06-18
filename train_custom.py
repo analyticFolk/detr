@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 # Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
 import argparse
 import datetime
@@ -5,17 +6,41 @@ import json
 import random
 import time
 from pathlib import Path
+import yaml
+from shutil import copyfile
+import os
 
 import numpy as np
 import torch
 from torch.utils.data import DataLoader, DistributedSampler
 
+import sys
+sys.path.append('/Projects/pytorch_tools/detr')
+
 import datasets
 import util.misc as utils
-from datasets import build_dataset, get_coco_api_from_dataset
+from datasets.custom import build as build_dataset
+from datasets import get_coco_api_from_dataset
 from engine import evaluate, train_one_epoch
 from models import build_model
 
+
+def get_cfg_parser():
+    parser = argparse.ArgumentParser('Config file reader')
+    parser.add_argument('--cfg', '-c', help='config.yaml file')
+    return parser
+
+def get_cfg_params(cfg):
+    cfg_args = []
+    for h_key in cfg.keys():
+        header = cfg[h_key]
+        if header is None:
+            continue
+        for k in header.keys():
+            cfg_args.append('--'+k)
+            if len(str(header[k])) > 0:
+                cfg_args.append(str(header[k]))
+    return cfg_args
 
 def get_args_parser():
     parser = argparse.ArgumentParser('Set transformer detector', add_help=False)
@@ -31,6 +56,10 @@ def get_args_parser():
     # Model parameters
     parser.add_argument('--frozen_weights', type=str, default=None,
                         help="Path to the pretrained model. If set, only the mask head will be trained")
+    parser.add_argument('--pretrained', type=str, default=None,
+                        help="Path to the pretrained model.")
+    parser.add_argument('--num_classes', type=int, default=91,
+                        help="number of classes")
     # * Backbone
     parser.add_argument('--backbone', default='resnet50', type=str,
                         help="Name of the convolutional backbone to use")
@@ -164,8 +193,11 @@ def main(args):
         # We also evaluate AP during panoptic training, on original coco DS
         coco_val = datasets.coco.build("val", args)
         base_ds = get_coco_api_from_dataset(coco_val)
-    else:
+    elif args.dataset_file != 'custom':
         base_ds = get_coco_api_from_dataset(dataset_val)
+    else:
+        base_ds = dataset_val
+        coco_evaluator = None
 
     if args.frozen_weights is not None:
         checkpoint = torch.load(args.frozen_weights, map_location='cpu')
@@ -214,12 +246,12 @@ def main(args):
                     'args': args,
                 }, checkpoint_path)
 
-        test_stats, coco_evaluator = evaluate(
-            model, criterion, postprocessors, data_loader_val, base_ds, device, args.output_dir
-        )
+        #test_stats, coco_evaluator = evaluate(
+        #    model, criterion, postprocessors, data_loader_val, base_ds, device, args.output_dir
+        #)
 
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
-                     **{f'test_{k}': v for k, v in test_stats.items()},
+                     #**{f'test_{k}': v for k, v in test_stats.items()},
                      'epoch': epoch,
                      'n_parameters': n_parameters}
 
@@ -244,8 +276,12 @@ def main(args):
 
 
 if __name__ == '__main__':
+    cfg_parser = get_cfg_parser()
+    cfg_args = cfg_parser.parse_args()
+    cfg_params = get_cfg_params(yaml.load(open(cfg_args.cfg), Loader=yaml.Loader))
     parser = argparse.ArgumentParser('DETR training and evaluation script', parents=[get_args_parser()])
-    args = parser.parse_args()
+    args = parser.parse_args(cfg_params)
     if args.output_dir:
         Path(args.output_dir).mkdir(parents=True, exist_ok=True)
+    copyfile(cfg_args.cfg, os.path.join(args.output_dir, 'config.yaml'))
     main(args)

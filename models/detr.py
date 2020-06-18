@@ -10,11 +10,22 @@ from util import box_ops
 from util.misc import (NestedTensor, accuracy, get_world_size, interpolate,
                        is_dist_avail_and_initialized)
 
-from .backbone import build_backbone
+from .backbone import build_backbone, Backbone, Joiner
 from .matcher import build_matcher
 from .segmentation import (DETRsegm, PostProcessPanoptic, PostProcessSegm,
                            dice_loss, sigmoid_focal_loss)
-from .transformer import build_transformer
+from .transformer import build_transformer, Transformer
+from .position_encoding import PositionEmbeddingSine
+
+def _make_detr(backbone_name: str, dilation=False, num_classes=91):
+    hidden_dim = 256
+    backbone = Backbone(backbone_name, train_backbone=True,
+                        return_interm_layers=False, dilation=dilation)
+    pos_enc = PositionEmbeddingSine(hidden_dim // 2, normalize=True)
+    backbone_with_pos_enc = Joiner(backbone, pos_enc)
+    backbone_with_pos_enc.num_channels = backbone.num_channels
+    transformer = Transformer(d_model=hidden_dim, return_intermediate_dec=True)
+    return DETR(backbone_with_pos_enc, transformer, num_classes=num_classes, num_queries=100)
 
 
 class DETR(nn.Module):
@@ -293,11 +304,12 @@ class MLP(nn.Module):
 
 
 def build(args):
-    num_classes = 20 if args.dataset_file != 'coco' else 91
+    #num_classes = 20 if args.dataset_file != 'coco' else 91
     if args.dataset_file == "coco_panoptic":
         num_classes = 250
     device = torch.device(args.device)
 
+    '''
     backbone = build_backbone(args)
 
     transformer = build_transformer(args)
@@ -309,6 +321,14 @@ def build(args):
         num_queries=args.num_queries,
         aux_loss=args.aux_loss,
     )
+    '''
+    model = _make_detr(args.backbone, dilation=args.dilation, num_classes=args.num_classes)
+    if args.pretrained:
+        pretrained_weights = torch.load(args.pretrained)['model']
+        if pretrained_weights['class_embed.bias'].shape[0] != (args.num_classes+1):
+            del pretrained_weights['class_embed.weight']
+            del pretrained_weights['class_embed.bias']
+        model.load_state_dict(pretrained_weights, strict=False)
     if args.masks:
         model = DETRsegm(model)
     matcher = build_matcher(args)
@@ -327,7 +347,7 @@ def build(args):
     losses = ['labels', 'boxes', 'cardinality']
     if args.masks:
         losses += ["masks"]
-    criterion = SetCriterion(num_classes, matcher=matcher, weight_dict=weight_dict,
+    criterion = SetCriterion(args.num_classes, matcher=matcher, weight_dict=weight_dict,
                              eos_coef=args.eos_coef, losses=losses)
     criterion.to(device)
     postprocessors = {'bbox': PostProcess()}
